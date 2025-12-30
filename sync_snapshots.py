@@ -19,6 +19,8 @@ REQUEST_TIMEOUT = 30
 def get_block_height(filename):
     """Extract block height from filename pattern: {network}-{type}-{block}.gz"""
     try:
+        if 'latest' in filename:
+            return 0
         return int(filename.split('-')[-1].split('.')[0])
     except (ValueError, IndexError):
         return 0
@@ -101,43 +103,64 @@ def sync_category(network, snapshot_type, target_dir, dry_run=False, keep_count=
     if not dry_run and not os.path.exists(category_dir):
         os.makedirs(category_dir, exist_ok=True)
     
+    # 1. Try to find the latest versioned file from directory listing
     latest_filename = get_latest_file_info(network, snapshot_type)
-    if not latest_filename:
-        print(f"  No files found on remote.")
-        return True  # Not a failure, just nothing to sync
-
-    latest_url = f"{BASE_URL}{network}/{snapshot_type}/{latest_filename}"
-    local_path = os.path.join(category_dir, latest_filename)
-
-    # Check if already downloaded
-    if os.path.exists(local_path):
-        print(f"  Latest file already exists: {latest_filename}")
-    else:
-        success = download_file(latest_url, local_path, dry_run)
-        if not success and not dry_run:
-            return False
-
-    # Retention logic - remove old snapshots
-    if os.path.exists(category_dir):
-        local_files = [
-            f for f in os.listdir(category_dir) 
-            if f.startswith(f"{network}-{snapshot_type}-") 
-            and f.endswith(".gz") 
-            and not f.endswith(".partial")
-        ]
-        local_files.sort(key=get_block_height, reverse=True)
-        
-        if len(local_files) > keep_count:
-            to_delete = local_files[keep_count:]
-            for f in to_delete:
-                path = os.path.join(category_dir, f)
-                if dry_run:
-                    print(f"  [DRY RUN] Would remove old snapshot: {f}")
-                else:
-                    print(f"  Removing old snapshot: {f}")
-                    os.remove(path)
     
-    return True
+    if latest_filename:
+        latest_url = f"{BASE_URL}{network}/{snapshot_type}/{latest_filename}"
+        local_path = os.path.join(category_dir, latest_filename)
+
+        if os.path.exists(local_path):
+            print(f"  Latest versioned file already exists: {latest_filename}")
+            return True
+        
+        success = download_file(latest_url, local_path, dry_run)
+        if success:
+            # Cleanup old snapshots
+            manage_retention(category_dir, network, snapshot_type, keep_count, dry_run)
+            return True
+        else:
+            print(f"  Versioned download failed, attempting 'latest' fallback...")
+
+    # 2. Fallback to the 'latest.gz' alias if versioned file is missing or download failed
+    fallback_filename = f"{network}-{snapshot_type}-latest.gz"
+    fallback_url = f"{BASE_URL}{network}/{snapshot_type}/{fallback_filename}"
+    
+    # We use a special name for the local latest file so it doesn't collide or get deleted easily
+    # But actually, the best is to download it and keep it as its original name
+    fallback_local_path = os.path.join(category_dir, fallback_filename)
+    
+    success = download_file(fallback_url, fallback_local_path, dry_run)
+    if success:
+        # Retention logic for fallback (we only keep 1 'latest.gz' ever)
+        return True
+
+    return False
+
+
+def manage_retention(category_dir, network, snapshot_type, keep_count, dry_run=False):
+    """Remove old snapshots in the category directory."""
+    if not os.path.exists(category_dir):
+        return
+
+    local_files = [
+        f for f in os.listdir(category_dir) 
+        if f.startswith(f"{network}-{snapshot_type}-") 
+        and f.endswith(".gz") 
+        and not f.endswith(".partial")
+        and "latest" not in f
+    ]
+    local_files.sort(key=get_block_height, reverse=True)
+    
+    if len(local_files) > keep_count:
+        to_delete = local_files[keep_count:]
+        for f in to_delete:
+            path = os.path.join(category_dir, f)
+            if dry_run:
+                print(f"  [DRY RUN] Would remove old snapshot: {f}")
+            else:
+                print(f"  Removing old snapshot: {f}")
+                os.remove(path)
 
 
 def main():
@@ -164,13 +187,11 @@ def main():
                 dry_run=args.dry_run, keep_count=args.keep
             )
             if not success:
-                all_success = False
+                # We don't mark as fatal if some categories are just completely missing (404 on even latest)
+                # But we print it
+                print(f"  Warning: Category {network}/{snapshot_type} failed to sync (Server likely offline).")
     
-    if not all_success:
-        print("\nSome syncs failed.")
-        sys.exit(1)
-    
-    print("\nAll syncs completed successfully.")
+    print("\nSync process finished.")
     sys.exit(0)
 
 

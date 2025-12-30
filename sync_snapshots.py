@@ -1,18 +1,34 @@
+#!/usr/bin/env python3
+"""Snapshot Mirror for Etherlink blockchain data from Nomadic Labs."""
+
 import os
 import requests
 from bs4 import BeautifulSoup
 import argparse
 import sys
-from urllib.parse import urljoin
+import time
 
 BASE_URL = "https://snapshotter-sandbox.nomadic-labs.eu/"
 NETWORKS = ["etherlink-mainnet", "etherlink-testnet", "etherlink-shadownet"]
 TYPES = ["rolling", "full", "archive"]
 
+# Request timeout in seconds
+REQUEST_TIMEOUT = 30
+
+
+def get_block_height(filename):
+    """Extract block height from filename pattern: {network}-{type}-{block}.gz"""
+    try:
+        return int(filename.split('-')[-1].split('.')[0])
+    except (ValueError, IndexError):
+        return 0
+
+
 def get_latest_file_info(network, snapshot_type):
+    """Fetch the latest snapshot filename for a given network and type."""
     url = f"{BASE_URL}{network}/{snapshot_type}/"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except Exception as e:
         print(f"Error fetching {url}: {e}")
@@ -35,78 +51,94 @@ def get_latest_file_info(network, snapshot_type):
     if not files:
         return None
     
-    # Sort files by block height (the number at the end)
-    # Pattern: {network}-{type}-{block}.gz
-    def get_block_height(filename):
-        try:
-            return int(filename.split('-')[-1].split('.')[0])
-        except ValueError:
-            return 0
-            
     files.sort(key=get_block_height, reverse=True)
     return files[0]
 
+
+def download_file(url, local_path, dry_run=False):
+    """Download a file with .partial suffix to prevent corrupt files on interruption."""
+    partial_path = local_path + ".partial"
+    
+    if dry_run:
+        print(f"  [DRY RUN] Would download: {url} -> {local_path}")
+        return True
+    
+    print(f"  Downloading: {url}...")
+    try:
+        with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(partial_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size:
+                        pct = (downloaded / total_size) * 100
+                        print(f"\r  Progress: {pct:.1f}%", end="", flush=True)
+            
+            print()  # Newline after progress
+        
+        # Rename .partial to final path only on successful completion
+        os.rename(partial_path, local_path)
+        print(f"  Download complete: {os.path.basename(local_path)}")
+        return True
+    
+    except Exception as e:
+        print(f"\n  Download failed: {e}")
+        # Clean up partial file on failure
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
+        return False
+
+
 def sync_category(network, snapshot_type, target_dir, dry_run=False, keep_count=1):
+    """Sync the latest snapshot for a specific network and type."""
     category_dir = os.path.join(target_dir, network, snapshot_type)
+    print(f"[{network}/{snapshot_type}]")
+    
     if not dry_run and not os.path.exists(category_dir):
         os.makedirs(category_dir, exist_ok=True)
     
     latest_filename = get_latest_file_info(network, snapshot_type)
     if not latest_filename:
-        print(f"[{network}/{snapshot_type}] No files found.")
-        return
+        print(f"  No files found on remote.")
+        return True  # Not a failure, just nothing to sync
 
     latest_url = f"{BASE_URL}{network}/{snapshot_type}/{latest_filename}"
     local_path = os.path.join(category_dir, latest_filename)
 
+    # Check if already downloaded
     if os.path.exists(local_path):
-        print(f"[{network}/{snapshot_type}] Latest file already exists: {latest_filename}")
+        print(f"  Latest file already exists: {latest_filename}")
     else:
-        if dry_run:
-            print(f"[{network}/{snapshot_type}] [DRY RUN] Would download: {latest_url} -> {local_path}")
-        else:
-            print(f"[{network}/{snapshot_type}] Downloading: {latest_url}...")
-            try:
-                with requests.get(latest_url, stream=True) as r:
-                    r.raise_for_status()
-                    with open(local_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                print(f"[{network}/{snapshot_type}] Download complete.")
-            except Exception as e:
-                print(f"[{network}/{snapshot_type}] Download failed: {e}")
+        success = download_file(latest_url, local_path, dry_run)
+        if not success and not dry_run:
+            return False
 
-    # Retention logic
-    if not dry_run and os.path.exists(category_dir):
-        local_files = [f for f in os.listdir(category_dir) if f.startswith(f"{network}-{snapshot_type}-") and f.endswith(".gz")]
-        # Re-sort local files by block height
-        def get_block_height(filename):
-            try:
-                return int(filename.split('-')[-1].split('.')[0])
-            except ValueError:
-                return 0
+    # Retention logic - remove old snapshots
+    if os.path.exists(category_dir):
+        local_files = [
+            f for f in os.listdir(category_dir) 
+            if f.startswith(f"{network}-{snapshot_type}-") 
+            and f.endswith(".gz") 
+            and not f.endswith(".partial")
+        ]
         local_files.sort(key=get_block_height, reverse=True)
         
         if len(local_files) > keep_count:
             to_delete = local_files[keep_count:]
             for f in to_delete:
                 path = os.path.join(category_dir, f)
-                print(f"[{network}/{snapshot_type}] Removing old snapshot: {f}")
-                os.remove(path)
-    elif dry_run:
-         # In dry run, we could mock the retention check if the dir exists
-         if os.path.exists(category_dir):
-            local_files = [f for f in os.listdir(category_dir) if f.startswith(f"{network}-{snapshot_type}-") and f.endswith(".gz")]
-            def get_block_height(filename):
-                try:
-                    return int(filename.split('-')[-1].split('.')[0])
-                except ValueError:
-                    return 0
-            local_files.sort(key=get_block_height, reverse=True)
-            if len(local_files) > keep_count:
-                to_delete = local_files[keep_count:]
-                for f in to_delete:
-                    print(f"[{network}/{snapshot_type}] [DRY RUN] Would remove old snapshot: {f}")
+                if dry_run:
+                    print(f"  [DRY RUN] Would remove old snapshot: {f}")
+                else:
+                    print(f"  Removing old snapshot: {f}")
+                    os.remove(path)
+    
+    return True
+
 
 def main():
     parser = argparse.ArgumentParser(description="Mirror Etherlink snapshots.")
@@ -118,11 +150,29 @@ def main():
     
     args = parser.parse_args()
 
-    print(f"Starting sync (Dry Run: {args.dry_run}, Keep: {args.keep})")
+    print(f"=== Snapshot Mirror ===")
+    print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE'}")
+    print(f"Target: {args.target}")
+    print(f"Retention: {args.keep} per category")
+    print()
     
+    all_success = True
     for network in args.networks:
         for snapshot_type in args.types:
-            sync_category(network, snapshot_type, args.target, dry_run=args.dry_run, keep_count=args.keep)
+            success = sync_category(
+                network, snapshot_type, args.target, 
+                dry_run=args.dry_run, keep_count=args.keep
+            )
+            if not success:
+                all_success = False
+    
+    if not all_success:
+        print("\nSome syncs failed.")
+        sys.exit(1)
+    
+    print("\nAll syncs completed successfully.")
+    sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

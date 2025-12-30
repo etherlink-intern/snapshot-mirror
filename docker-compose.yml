@@ -5,10 +5,12 @@ services:
     build: .
     container_name: snapshot-mirror
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - TARGET_DIR=/snapshots
-      - KEEP_COUNT=1
-      - SYNC_INTERVAL=21600 # Sync every 6 hours
+      - KEEP_COUNT=${KEEP_COUNT:-1}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-21600}
     volumes:
       - snapshot-data:/snapshots
 
@@ -17,5 +19,5 @@ volumes:
     driver: local
     driver_opts:
       type: cifs
-      device: "//<SYNOLOGY_IP>/<SHARE_NAME>"
-      o: "username=<USER>,password=<PASSWORD>,vers=3.0,uid=1000,gid=1000"
+      device: "//${SYNOLOGY_IP}/${SHARE_NAME}"
+      o: "username=${CIFS_USER},password=${CIFS_PASSWORD},vers=3.0,uid=1000,gid=1000"

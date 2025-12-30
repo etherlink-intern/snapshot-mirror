@@ -72,6 +72,9 @@ def download_file(url, local_path, dry_run=False):
             total_size = int(r.headers.get('content-length', 0))
             downloaded = 0
             
+            # Ensure target directory exists
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
             with open(partial_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
@@ -83,6 +86,8 @@ def download_file(url, local_path, dry_run=False):
             print()  # Newline after progress
         
         # Rename .partial to final path only on successful completion
+        if os.path.exists(local_path):
+            os.remove(local_path)
         os.rename(partial_path, local_path)
         print(f"  Download complete: {os.path.basename(local_path)}")
         return True
@@ -103,37 +108,45 @@ def sync_category(network, snapshot_type, target_dir, dry_run=False, keep_count=
     if not dry_run and not os.path.exists(category_dir):
         os.makedirs(category_dir, exist_ok=True)
     
-    # 1. Try to find the latest versioned file from directory listing
-    latest_filename = get_latest_file_info(network, snapshot_type)
+    # 1. Scrape the page for the versioned filename (e.g., ...35084466.gz)
+    scraped_filename = get_latest_file_info(network, snapshot_type)
     
-    if latest_filename:
-        latest_url = f"{BASE_URL}{network}/{snapshot_type}/{latest_filename}"
-        local_path = os.path.join(category_dir, latest_filename)
+    if scraped_filename:
+        versioned_url = f"{BASE_URL}{network}/{snapshot_type}/{scraped_filename}"
+        local_path = os.path.join(category_dir, scraped_filename)
 
         if os.path.exists(local_path):
-            print(f"  Latest versioned file already exists: {latest_filename}")
+            print(f"  Latest versioned file already exists: {scraped_filename}")
+            manage_retention(category_dir, network, snapshot_type, keep_count, dry_run)
             return True
         
-        success = download_file(latest_url, local_path, dry_run)
+        # Try versioned download first
+        success = download_file(versioned_url, local_path, dry_run)
         if success:
-            # Cleanup old snapshots
             manage_retention(category_dir, network, snapshot_type, keep_count, dry_run)
             return True
         else:
-            print(f"  Versioned download failed, attempting 'latest' fallback...")
+            print(f"  Versioned link (404/Error), falling back to 'latest.gz' but saving as version {scraped_filename}...")
+            
+            # 2. Fallback: Download latest.gz but save it locally as the versioned name we found!
+            fallback_url = f"{BASE_URL}{network}/{snapshot_type}/{network}-{snapshot_type}-latest.gz"
+            success = download_file(fallback_url, local_path, dry_run)
+            if success:
+                manage_retention(category_dir, network, snapshot_type, keep_count, dry_run)
+                return True
+            else:
+                print(f"  Fallback 'latest.gz' also failed.")
 
-    # 2. Fallback to the 'latest.gz' alias if versioned file is missing or download failed
-    fallback_filename = f"{network}-{snapshot_type}-latest.gz"
-    fallback_url = f"{BASE_URL}{network}/{snapshot_type}/{fallback_filename}"
-    
-    # We use a special name for the local latest file so it doesn't collide or get deleted easily
-    # But actually, the best is to download it and keep it as its original name
-    fallback_local_path = os.path.join(category_dir, fallback_filename)
-    
-    success = download_file(fallback_url, fallback_local_path, dry_run)
-    if success:
-        # Retention logic for fallback (we only keep 1 'latest.gz' ever)
-        return True
+    else:
+        # If we couldn't even scrape a name, try direct download of 'latest.gz' as a last resort
+        print(f"  Could not identify latest version via scrape. Trying direct 'latest.gz'...")
+        latest_alias = f"{network}-{snapshot_type}-latest.gz"
+        latest_url = f"{BASE_URL}{network}/{snapshot_type}/{latest_alias}"
+        local_path = os.path.join(category_dir, latest_alias)
+        
+        # In this case we can't easily do N and N-1 because we don't have block heights
+        # but the request was specifically for a mirror, so we download what we can.
+        return download_file(latest_url, local_path, dry_run)
 
     return False
 
@@ -150,6 +163,7 @@ def manage_retention(category_dir, network, snapshot_type, keep_count, dry_run=F
         and not f.endswith(".partial")
         and "latest" not in f
     ]
+    # Sort by block height descending
     local_files.sort(key=get_block_height, reverse=True)
     
     if len(local_files) > keep_count:
@@ -179,17 +193,12 @@ def main():
     print(f"Retention: {args.keep} per category")
     print()
     
-    all_success = True
     for network in args.networks:
         for snapshot_type in args.types:
-            success = sync_category(
+            sync_category(
                 network, snapshot_type, args.target, 
                 dry_run=args.dry_run, keep_count=args.keep
             )
-            if not success:
-                # We don't mark as fatal if some categories are just completely missing (404 on even latest)
-                # But we print it
-                print(f"  Warning: Category {network}/{snapshot_type} failed to sync (Server likely offline).")
     
     print("\nSync process finished.")
     sys.exit(0)

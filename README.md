@@ -12,6 +12,28 @@ A robust, Dockerized mirroring system for Etherlink blockchain snapshots. This t
 
 ---
 
+## 🔄 Execution Flow
+
+The script automatically iterates through every combination of networks and snapshot types in each sync cycle:
+
+1.  **Iterates Networks**: Mainnet → Testnet → Shadownet.
+2.  **Iterates Types**: Rolling → Full → Archive.
+3.  **Total Checks**: It performs **9 sync attempts** (3 networks × 3 types) per cycle.
+
+In the logs, it will appear like this:
+```text
+[etherlink-mainnet/rolling]
+  ... checks and downloads ...
+[etherlink-mainnet/full]
+  ...
+[etherlink-mainnet/archive]
+  ...
+[etherlink-testnet/rolling]
+  ... (skips or warns if server has no files)
+```
+
+---
+
 ## 🚀 Setup & Deployment
 
 ### 1. Configure the Environment
@@ -35,6 +57,13 @@ This creates a `snapshot-mirror.tar` file.
 1. **Import Image**: Open **Container Manager** -> **Image** -> **Import** -> Select `snapshot-mirror.tar`.
 2. **Setup Folder**: Create a folder in File Station (e.g., `/docker/snapshot-mirror/`) and upload your `docker-compose.yml` and `.env` files there.
 3. **Launch Project**: In **Container Manager** -> **Project** -> **Create**, select the folder and use the existing `docker-compose.yml`.
+
+### 4. Check Health Status (Optional)
+You can run a quick health check locally to see which snapshots are actually online on the server:
+```bash
+python3 check_status.py
+```
+This will show you a table of which listing pages are up, which versioned files are 404ing, and which `latest.gz` aliases are working.
 
 ---
 

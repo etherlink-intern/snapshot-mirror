@@ -7,8 +7,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-root user with UID 1000 to match Synology SMB mount defaults
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g 1000 -r -m appuser
 
 # Copy requirements and script
 COPY sync_snapshots.py .

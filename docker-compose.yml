@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   snapshot-mirror:
-    build: .
+    image: snapshot-mirror:latest
     container_name: snapshot-mirror
     restart: unless-stopped
     env_file:
@@ -17,7 +17,15 @@ services:
 volumes:
   snapshot-data:
     driver: local
-    driver_opts:
-      type: cifs
-      device: "//${SYNOLOGY_IP}/${SHARE_NAME}"
-      o: "username=${CIFS_USER},password=${CIFS_PASSWORD},vers=3.0,uid=1000,gid=1000"
+    # NOTE: Configure this with your actual network storage (NAS, SAN, etc.)
+    # Example 1: SMB/CIFS (Common for Synology/QNAP/Windows)
+    # driver_opts:
+    #   type: cifs
+    #   device: "//${NAS_IP}/${SHARE_NAME}"
+    #   o: "username=${STORAGE_USER},password=${STORAGE_PASSWORD},vers=3.0,uid=1000,gid=1000"
+    #
+    # Example 2: NFS (Common for Linux/TrueNAS)
+    # driver_opts:
+    #   type: nfs
+    #   o: "addr=${NAS_IP},nolock,soft,rw"
+    #   device: ":/${EXPORT_PATH}"

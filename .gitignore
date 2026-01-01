@@ -1,2 +1,9 @@
 venv/
 .env
+report.md
+docker-compose.prod.yml
+*.tar
+__pycache__/
+.DS_Store
+snapshots/
+*.partial

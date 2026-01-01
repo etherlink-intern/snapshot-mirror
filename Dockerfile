@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Create non-root user with UID 1000 to match Synology SMB mount defaults
+# Create non-root user with UID 1000 to match common NAS/SMB mount defaults
 RUN groupadd -g 1000 appuser && \
     useradd -u 1000 -g 1000 -r -m appuser
 
